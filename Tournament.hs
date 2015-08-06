@@ -8,7 +8,8 @@ module Tournament (
     payoff, totalScores, invert,
     runBot, runRound, runMatch, rounds,
     runRoundRobin, tabulateResults, eliminateHalf,
-    showMatchPlayByPlay, displayTournament
+    showMatchPlayByPlay, displayTournament,
+    runPair, singleElimination, simpleElimination
     ) where
 
 import Prelude
@@ -16,9 +17,9 @@ import Control.Applicative (Applicative)
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, handle)
 import Control.Monad (replicateM, liftM2, liftM3)
-import Data.List (nub, sort)
+import Data.List (nub, sort, permutations, elemIndex)
 import Data.Map (fromListWith, toList)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, fromJust)
 import Data.Tuple (swap)
 import System.Random (randomRIO)
 import System.Timeout (timeout)
@@ -99,7 +100,7 @@ instance BotEnvironment IO where
 runRound :: BotEnvironment m => Bot -> Bot -> [Moves] -> m Moves
 runRound bot1 bot2 history = sequenceM2' (runBot1, runBot2)
   where runTimeout = fmap (fromMaybe Defect)
-            . handleAll (\_ -> return Nothing) . time (5 * 10 ^ 6)
+            . handleAll (\_ -> return Nothing) . time 5000000
         runBot1 = runTimeout $ runBot bot1 bot2 history
         runBot2 = runTimeout $ runBot bot2 bot1 $ invert history
 
@@ -140,6 +141,39 @@ type MatchResult = (Player, Player, [Moves])
 showMatchPlayByPlay :: MatchResult -> String
 showMatchPlayByPlay (b1, b2, hist) = name b1 ++ " vs " ++ name b2 ++ moves
   where moves = foldr ((++) . (++) "\n" . show) "" hist
+
+
+-- Single elimination variant
+
+runPair :: BotEnvironment m => Player -> Player -> m [Player]
+runPair b1 b2 = do
+    (x, y) <- totalScores `fmap` runMatch 10 (bot b1) (bot b2)
+    return (if x == y then [b1, b2] else if x > y then [b1] else [b2])
+
+simpleElimination :: BotEnvironment m => [Player] -> m [Player]
+simpleElimination []          = return []
+simpleElimination [a]         = return [a]
+simpleElimination [a, b]      = runPair a b
+simpleElimination xs@(a:b:cs) = do
+    x <- runPair a b
+    y <- simpleElimination cs
+    if (x ++ y) == xs then return xs else simpleElimination (x ++ y)
+
+tryPermutation :: BotEnvironment m => [Player] -> m (Bool, [Player])
+tryPermutation xs = do
+    result <- simpleElimination xs
+    return (result == xs, result)
+
+singleElimination :: BotEnvironment m => [Player] -> m [Player]
+singleElimination xs@(a:b:c:ds) = do
+    result <- fmap (lookup False) . mapM tryPermutation $ permutations xs
+    case result of
+        Nothing -> return xs
+        Just x  -> singleElimination x
+singleElimination xs = simpleElimination xs
+
+
+-- Round robin version from last year
 
 -- A round-robin round consists of all combinations of bots playing one match
 -- against each other.
